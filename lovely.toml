@@ -1,0 +1,182 @@
+[manifest]
+version = "1.0.0"
+dump_lua = true
+priority = 20
+
+# 首购免费：在购买事件加入本局商店的首购判定。
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)local c1 = e.config.ref_table'''
+position = "after"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_free_purchase = RuleLab and RuleLab.can_free_purchase(c1)
+if rule_lab_free_purchase then c1.cost = 0 end
+'''
+
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)if c1.cost ~= 0 then\n\s+ease_dollars\(-c1.cost\)\n\s+end'''
+position = "after"
+line_prepend = "$indent"
+payload = '''
+if RuleLab and RuleLab.after_purchase then RuleLab.after_purchase(c1, rule_lab_free_purchase) end
+'''
+
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)card:sell_card\(\)'''
+position = "after"
+line_prepend = "$indent"
+payload = '''
+if RuleLab and RuleLab.after_sale then RuleLab.after_sale(card) end
+'''
+
+# 商店回声：重掷前记住第一张 Joker；下一次生成商店卡时复制它。
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)for i = #G.shop_jokers.cards,1, -1 do'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+if RuleLab and RuleLab.capture_shop_echo then RuleLab.capture_shop_echo() end
+'''
+
+[[patches]]
+[patches.regex]
+target = "functions/UI_definitions.lua"
+pattern = '''(?<indent>[\t ]*)function create_card_for_shop\(area\)'''
+position = "after"
+line_prepend = "$indent"
+payload = '''
+if RuleLab and RuleLab.take_shop_echo then
+    local rule_lab_echo = RuleLab.take_shop_echo(area)
+    if rule_lab_echo and rule_lab_echo.key then
+        local rule_lab_card = create_card('Joker', area, nil, nil, nil, nil, rule_lab_echo.key, 'rule_lab_echo')
+        if rule_lab_echo.edition then rule_lab_card:set_edition(rule_lab_echo.edition, true, true) end
+        create_shop_card_ui(rule_lab_card, 'Joker', area)
+        return rule_lab_card
+    end
+end
+'''
+
+# Boss 重选：配置开关提供一次免费重选，并让按钮在没有 Voucher 时也可用。
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)G\.FUNCS\.reroll_boss = function\(e\)'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_reroll_boss_button_ref = G.FUNCS.reroll_boss_button
+G.FUNCS.reroll_boss_button = function(e)
+    if RuleLab and RuleLab:boss_reroll_available() then
+        local dollars = G.GAME.dollars
+        local bankrupt_at = G.GAME.bankrupt_at
+        local old_voucher = G.GAME.used_vouchers['v_directors_cut']
+        G.GAME.dollars = math.max(G.GAME.dollars, G.GAME.bankrupt_at + 10)
+        G.GAME.used_vouchers['v_directors_cut'] = true
+        G.GAME.round_resets.boss_rerolled = false
+        rule_lab_reroll_boss_button_ref(e)
+        G.GAME.dollars = dollars
+        G.GAME.bankrupt_at = bankrupt_at
+        G.GAME.used_vouchers['v_directors_cut'] = old_voucher
+    else
+        rule_lab_reroll_boss_button_ref(e)
+    end
+end
+'''
+
+[[patches]]
+[patches.regex]
+target = "functions/button_callbacks.lua"
+pattern = '''(?<indent>[\t ]*)G\.FUNCS\.reroll_shop = function\(e\)'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_reroll_boss_ref = G.FUNCS.reroll_boss
+G.FUNCS.reroll_boss = function(e)
+    if RuleLab and RuleLab:consume_boss_reroll() then G.from_boss_tag = true end
+    return rule_lab_reroll_boss_ref(e)
+end
+'''
+
+# 牌型改写、失败保底和牌型函数包装。
+[[patches]]
+[patches.regex]
+target = "functions/state_events.lua"
+pattern = '''(?<indent>[\t ]*)-- context\.end_of_round calculations'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+if game_over and RuleLab and RuleLab.try_bailout and RuleLab.try_bailout() then
+    game_over = false
+end
+'''
+
+[[patches]]
+[patches.regex]
+target = "functions/state_events.lua"
+pattern = '''(?<indent>[\t ]*)G\.FUNCS\.evaluate_play = function\(e\)'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_get_poker_hand_info_ref = G.FUNCS.get_poker_hand_info
+G.FUNCS.get_poker_hand_info = function(cards)
+    local text, disp_text, poker_hands, scoring_hand, non_loc_disp_text = rule_lab_get_poker_hand_info_ref(cards)
+    local state = RuleLab and RuleLab.state and RuleLab.state()
+    if RuleLab and RuleLab.enabled('universal_rewrite') and state and not state.universal_rewrite_used
+        and G.GAME and G.GAME.current_round and (G.GAME.current_round.hands_played or 0) == 0 then
+        state.universal_rewrite_used = true
+        text = 'Straight Flush'
+        disp_text = localize(text, 'poker_hands')
+        non_loc_disp_text = text
+        scoring_hand = {}
+        for i = 1, #cards do scoring_hand[#scoring_hand + 1] = cards[i] end
+        poker_hands = poker_hands or {}
+        poker_hands[text] = {scoring_hand}
+    end
+    return text, disp_text, poker_hands, scoring_hand, non_loc_disp_text
+end
+'''
+
+# Joker 超频/原版升阶，以及 Negative Edition 槽位放大。
+[[patches]]
+[patches.regex]
+target = "card.lua"
+pattern = '''(?<indent>[\t ]*)function Card:is_suit\(suit, bypass_debuff, flush_calc\)'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_calculate_joker_ref = Card.calculate_joker
+function Card:calculate_joker(context, ...)
+    local result = rule_lab_calculate_joker_ref(self, context, ...)
+    if RuleLab and RuleLab.after_joker_calculate then result = RuleLab.after_joker_calculate(self, context or {}, result) end
+    return result
+end
+'''
+
+[[patches]]
+[patches.regex]
+target = "card.lua"
+pattern = '''(?<indent>[\t ]*)function Card:generate_UIBox_unlock_table\(hidden\)'''
+position = "before"
+line_prepend = "$indent"
+payload = '''
+local rule_lab_add_to_deck_ref = Card.add_to_deck
+function Card:add_to_deck(...)
+    local result = rule_lab_add_to_deck_ref(self, ...)
+    if RuleLab and RuleLab.sync_negative then RuleLab.sync_negative(self) end
+    return result
+end
+local rule_lab_remove_from_deck_ref = Card.remove_from_deck
+function Card:remove_from_deck(...)
+    local result = rule_lab_remove_from_deck_ref(self, ...)
+    if RuleLab and RuleLab.sync_negative then RuleLab.sync_negative(self) end
+    return result
+end
+'''

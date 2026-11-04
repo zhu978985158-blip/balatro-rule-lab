@@ -1,0 +1,7 @@
+.DS_Store
+/backups/
+/dist/
+/install-backup-*/
+/安装记录-*.md
+/lovely/
+*.log
